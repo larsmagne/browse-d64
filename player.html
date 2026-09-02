@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C64 player</title>
+<style>
+  /* The emulator's size must not depend on its own content, or its resize
+     handling can feed back and grow forever. This page always lives in an
+     iframe whose size the parent controls, so pin the emulator to the
+     viewport and let nothing else influence layout. */
+  html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; background: #000; }
+  .emu-holder { position: fixed; inset: 0; }
+  #emu { width: 100%; height: 100%; }
+  .error {
+    position: fixed; top: 8px; left: 8px; right: 8px; z-index: 10;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    color: #fff; background: #a03030; padding: 6px 10px;
+  }
+</style>
+</head>
+<body>
+
+<div class="emu-holder"><div id="emu"></div></div>
+<div id="err" class="error" hidden></div>
+
+<script>
+"use strict";
+
+const qs = new URLSearchParams(location.search);
+const d = parseInt(qs.get("d"), 10);
+const p = parseInt(qs.get("p"), 10);
+
+function fail(msg) {
+  const e = document.getElementById("err");
+  e.hidden = false;
+  e.textContent = msg;
+}
+
+/* Mirror make_manifest.py's launch_stem(): keep the two in sync. */
+function launchStem(diskFile, progIndex) {
+  const base = diskFile.split("/").pop().replace(/\.[^.]*$/, "");
+  const stem = base.replace(/[^A-Za-z0-9._-]+/g, "_");
+  return `${stem}__${String(progIndex).padStart(3, "0")}`;
+}
+
+fetch("manifest.json?ts=" + Date.now())
+  .then(r => { if (!r.ok) throw new Error("manifest.json: HTTP " + r.status); return r.json(); })
+  .then(manifest => {
+    const disk = manifest.disks?.[d];
+    const prog = disk?.programs?.[p];
+    if (!prog) throw new Error("no such program in manifest (d=" + d + ", p=" + p + ")");
+
+    /* EmulatorJS configuration — see https://emulatorjs.org/docs/options
+       Each launch zip contains a one-line start.m3u plus the disk image;
+       EmulatorJS extracts both into the emulator's file system and starts
+       the m3u, which the VICE core uses to attach the disk and either
+       autostart the chosen program or type the startup commands itself. */
+    window.EJS_player = "#emu";
+    window.EJS_core = "c64";                       // vice_x64sc core
+    window.EJS_pathtodata = "https://cdn.emulatorjs.org/stable/data/";
+    window.EJS_gameUrl = encodeURI(`launch/${launchStem(disk.file, p)}.zip`);
+    window.EJS_gameName = (prog.label || prog.file).replace(/[^\w \-]/g, "");
+    window.EJS_gameID = 1000 * d + p + 1;
+    window.EJS_backgroundColor = "#40318D";
+    window.EJS_color = "#7C70DA";
+    window.EJS_startButtonName = "Start " + (prog.label || prog.file);
+    /* Skip the "Start Game" button. Autoplay permission is delegated from
+       the parent page (allow="autoplay" on the iframe), and the person has
+       just clicked a menu item there, so browsers should allow it. If a
+       browser still blocks it, the emulator waits until the first click
+       inside it instead of showing the button. */
+    window.EJS_startOnLoaded = true;
+    /* "keyboard": true in the manifest turns on EmulatorJS's "Direct
+       Keyboard Input" for this program, so keystrokes go to the C64 instead
+       of the virtual gamepad mapping. Leave it off for joystick games, where
+       that mapping is what makes keyboard play work (arrows + Z, or a real
+       gamepad). Anything in the program's "options" object is passed to the
+       emulator settings as-is, for tweaking any other menu option per file.
+       Visitors can always flip these live in the emulator's settings menu. */
+    /* "mute" = fast-forward ALL disk access, ignoring whether the program
+       is making sound (the "enabled" value politely refuses to warp while
+       audio plays, which leaves music-while-loading titles at real 1541
+       speed). Audio is muted during the warp. Override per program via
+       "options" if a loading tune is worth hearing:
+         "options": { "vice_autoloadwarp": "disabled" }  */
+    const opts = {
+      "vice_autoloadwarp": "mute",
+    };
+    /* Keyboard is enabled automatically for machine-language files loading
+       ABOVE $0801: they have no BASIC stub, so the user lands at READY
+       needing to type a SYS. At $0801 it's a self-starting BASIC program;
+       BELOW $0801 the load overwrites system vectors (or the stack) and
+       autostarts by itself — either way nothing to type, and likely a
+       joystick game, so those keep the gamepad mapping. An explicit
+       "keyboard": true/false in the manifest always wins. */
+    const wantsKeyboard = (typeof prog.keyboard === "boolean")
+      ? prog.keyboard
+      : (typeof prog.load === "number" && prog.load > 0x0801);
+    if (wantsKeyboard) opts["keyboardInput"] = "enabled";
+    Object.assign(opts, prog.options || {});
+    window.EJS_defaultOptions = opts;
+
+    /* EmulatorJS saves per-game settings in localStorage and re-applies
+       them during game start, AFTER our defaults — so a value saved in an
+       earlier session (e.g. keyboard off, from before it was enabled by
+       default for ML files) silently wins. Re-assert the manifest's choice
+       once the game has started; the settings menu still works normally for
+       the rest of the session. */
+    window.EJS_onGameStart = () => {
+      setTimeout(() => {
+        try {
+          window.EJS_emulator.changeSettingOption(
+            "keyboardInput", wantsKeyboard ? "enabled" : "disabled");
+        } catch (e) { /* older EmulatorJS without this API: defaults only */ }
+      }, 50);
+    };
+
+    const s = document.createElement("script");
+    s.src = "https://cdn.emulatorjs.org/stable/data/loader.js";
+    s.onerror = () => fail("Could not load EmulatorJS from the CDN.");
+    document.body.appendChild(s);
+  })
+  .catch(err => fail(String(err.message || err)));
+</script>
+</body>
+</html>

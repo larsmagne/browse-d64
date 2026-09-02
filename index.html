@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C64 disk library</title>
+<link rel="stylesheet" href="style.css?v=15">
+</head>
+<body>
+
+<div class="layout">
+
+<div class="screen">
+  <h1>**** C64 DISK LIBRARY ****</h1>
+  <div id="menu" class="dim">READING MANIFEST...</div>
+  <p class="ready">READY.<span class="cursor"></span></p>
+</div>
+
+<div id="emu-wrap">
+  <iframe id="emu-frame" title="C64 emulator" allow="fullscreen; autoplay"></iframe>
+  <div id="note" class="startup-note" hidden>
+    <div>This program is started by typing (the emulator does it for you):</div>
+    <pre id="note-cmds"></pre>
+  </div>
+</div>
+
+</div>
+
+<footer>Runs in your browser with EmulatorJS + VICE. Click a program, then press
+the start button in the emulator window. F12 toggles the emulator status bar;
+right Ctrl swaps joystick ports.</footer>
+
+<script>
+"use strict";
+
+const SITE_VERSION = 15;   // bump when player.html changes, defeats stale caches
+const CATEGORIES = ["games", "demos", "utilities", "own", "misc"];
+
+const menuEl = document.getElementById("menu");
+const frame = document.getElementById("emu-frame");
+let manifest = null;
+let savedScroll = 0;       // disk-list scroll position, restored on "back"
+let lastView = null;       // "disks" | "programs", for scroll bookkeeping
+let lastLaunchKey = null;  // avoid reloading the iframe on re-renders
+
+/* ---------------------------------------------------------------- helpers */
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+const visiblePrograms = disk =>
+  disk.programs.map((prog, p) => ({ prog, p })).filter(x => !x.prog.hide);
+const visibleDisks = () =>
+  manifest.disks.map((disk, i) => ({ disk, i }))
+    .filter(x => !x.disk.hide && visiblePrograms(x.disk).length > 0);
+
+/* All navigation state lives in the URL hash, so every view is linkable:
+     #cat=games                          a filtered disk list
+     #disk=disks/games1.d64              a disk's program list
+     #disk=disks/games1.d64&prog=PACMAN  that program, loaded and running   */
+function parseHash() {
+  const h = new URLSearchParams(location.hash.replace(/^#/, ""));
+  return { cat: h.get("cat") || "all", disk: h.get("disk"), prog: h.get("prog") };
+}
+function setHash(state) {
+  const h = new URLSearchParams();
+  if (state.cat && state.cat !== "all") h.set("cat", state.cat);
+  if (state.disk) h.set("disk", state.disk);
+  if (state.prog != null) h.set("prog", state.prog);
+  const s = "#" + h.toString();
+  if (s !== location.hash) location.hash = s;   // triggers render via hashchange
+  else render();
+}
+
+/* ------------------------------------------------------------- disk menu */
+function categoryRow(cat) {
+  const present = CATEGORIES.filter(c =>
+    visibleDisks().some(x => x.disk.category === c));
+  const row = el("div", "cats");
+  row.setAttribute("role", "radiogroup");
+  row.append("CATEGORY: ");
+  ["all", ...present].forEach(c => {
+    const b = el("button", null, c.toUpperCase());
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(c === cat));
+    b.addEventListener("click", () => setHash({ cat: c }));
+    row.append(b, " ");
+  });
+  return row;
+}
+
+function renderDisks(state) {
+  menuEl.classList.remove("dim");
+  menuEl.textContent = "";
+  const all = visibleDisks();
+  if (!all.length) {
+    menuEl.append(el("div", "dim",
+      "NO DISKS YET. RUN make_manifest.py AND UPLOAD manifest.json + launch/."));
+    return;
+  }
+  menuEl.append(categoryRow(state.cat));
+  const disks = state.cat === "all" ? all
+    : all.filter(x => x.disk.category === state.cat);
+  menuEl.append(el("div", null, "SELECT A DISK:"));
+  const ul = el("ul", "listing");
+  disks.forEach(({ disk }) => {
+    const b = el("button");
+    if (disk.file === parseHash().disk || disk.file === renderDisks.lastDisk) {
+      b.classList.add("current");
+    }
+    b.append(el("span", "blocks", String(visiblePrograms(disk).length).padStart(2)));
+    b.append(` "${disk.name}"`);
+    b.addEventListener("click", () =>
+      setHash({ cat: state.cat, disk: disk.file }));
+    const li = el("li");
+    li.append(b);
+    ul.append(li);
+  });
+  if (!disks.length) menuEl.append(el("div", "dim", "NOTHING IN THIS CATEGORY."));
+  else menuEl.append(ul);
+
+  if (lastView === "programs") {          // returning: put them back where they were
+    requestAnimationFrame(() => window.scrollTo(0, savedScroll));
+  }
+  lastView = "disks";
+}
+
+/* ---------------------------------------------------------- program menu */
+function renderPrograms(state, disk, dIndex) {
+  if (lastView === "disks") savedScroll = window.scrollY;
+  renderDisks.lastDisk = disk.file;       // marked bright on return
+  menuEl.textContent = "";
+  menuEl.append(el("div", null, `0 "${disk.name}"`));
+  const ul = el("ul", "listing");
+  visiblePrograms(disk).forEach(({ prog, p }) => {
+    const b = el("button");
+    if (prog.file === state.prog) b.classList.add("current");
+    b.append(el("span", "blocks", String(prog.blocks ?? "").padStart(3) + " "));
+    b.append(`"${prog.label || prog.file}"  `);
+    b.append(el("span", "ftype", "commands" in prog ? "PRG*" : "PRG"));
+    /* Show the load address only for machine-language files loading above
+       $0801 — the ones you'll SYS by hand (decimal value = the SYS number,
+       usually). BASIC programs at $0801 and below-BASIC vector-trick
+       autostarters both run themselves, so no address clutter for them. */
+    if (typeof prog.load === "number" && prog.load > 0x0801) {
+      const hex = "$" + prog.load.toString(16).toUpperCase().padStart(4, "0");
+      b.append(el("span", "ftype", `  ${hex} (${prog.load})`));
+    }
+    b.addEventListener("click", () =>
+      setHash({ cat: state.cat, disk: disk.file, prog: prog.file }));
+    const li = el("li");
+    li.append(b);
+    ul.append(li);
+  });
+  menuEl.append(ul);
+  const back = el("button", "crumb", "<- BACK TO DISKS");
+  back.addEventListener("click", () => setHash({ cat: state.cat }));
+  menuEl.append(back);
+  lastView = "programs";
+}
+
+/* -------------------------------------------------------------- launching */
+function launch(dIndex, pIndex, prog) {
+  const key = dIndex + ":" + pIndex;
+  if (key === lastLaunchKey) return;      // re-render, not a new selection
+  lastLaunchKey = key;
+  const note = document.getElementById("note");
+  if ("commands" in prog) {
+    note.hidden = false;
+    document.getElementById("note-cmds").textContent =
+      prog.commands.filter(c => typeof c === "string").join("\n");
+  } else {
+    note.hidden = true;
+  }
+  frame.classList.add("active");
+  frame.src = `player.html?d=${dIndex}&p=${pIndex}&v=${SITE_VERSION}`;
+  if (window.matchMedia("(max-width: 900px)").matches) {
+    frame.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+/* -------------------------------------------------------------- rendering */
+function render() {
+  const state = parseHash();
+  if (state.disk) {
+    const found = visibleDisks().find(x => x.disk.file === state.disk);
+    if (found) {
+      renderPrograms(state, found.disk, found.i);
+      if (state.prog != null) {
+        const vp = visiblePrograms(found.disk).find(x => x.prog.file === state.prog);
+        if (vp) launch(found.i, vp.p, vp.prog);
+      }
+      return;
+    }
+  }
+  renderDisks(state);
+}
+
+window.addEventListener("hashchange", render);
+
+fetch("manifest.json?ts=" + Date.now())
+  .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+  .then(m => { manifest = m; render(); })
+  .catch(err => {
+    menuEl.className = "error";
+    menuEl.textContent =
+      "COULD NOT LOAD manifest.json (" + err.message + "). " +
+      "GENERATE IT WITH make_manifest.py AND SERVE THIS SITE OVER HTTP.";
+  });
+</script>
+</body>
+</html>
