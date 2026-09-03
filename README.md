@@ -52,6 +52,15 @@ which must stay in sync with the manifest.
 
 Per-program options:
 
+- **`"prod": true`** (disks only) — publication switch: on any host other
+  than localhost, only disks marked `"prod": true` are listed. On localhost
+  every non-hidden disk shows, so you can curate and test the whole
+  collection locally and promote disks one by one as they're verified.
+  `"hide": true` beats `"prod": true`. Unlisted disks remain reachable by
+  direct link (`#disk=...`), so you can share a URL to something without
+  putting it in the public menu; only `"hide"` makes a disk unreachable.
+  Note this is menu visibility, not access control: launch bundles for
+  unlisted disks still exist on the server if you upload them.
 - **`"hide": true`** — keeps the entry in the manifest but off the site: no
   menu listing and no launch bundle generated. Made for curating: mark data
   files and broken programs as you test your way through a collection,

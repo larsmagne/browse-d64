@@ -26,14 +26,15 @@
 
 </div>
 
-<footer>Runs in your browser with EmulatorJS + VICE. Click a program, then press
-the start button in the emulator window. F12 toggles the emulator status bar;
-right Ctrl swaps joystick ports.</footer>
+<footer>Runs in your browser with EmulatorJS + VICE. In games: the keyboard is
+the C64 keyboard; arrow keys move the joystick, right Ctrl (or right Alt)
+fires, and F9 switches between joystick ports 1 and 2 — try F9 first if a
+game ignores the stick. F12 toggles the emulator status bar.</footer>
 
 <script>
 "use strict";
 
-const SITE_VERSION = 15;   // bump when player.html changes, defeats stale caches
+const SITE_VERSION = 24;   // bump when player.html changes, defeats stale caches
 const CATEGORIES = ["games", "demos", "utilities", "own", "misc"];
 
 const menuEl = document.getElementById("menu");
@@ -42,6 +43,11 @@ let manifest = null;
 let savedScroll = 0;       // disk-list scroll position, restored on "back"
 let lastView = null;       // "disks" | "programs", for scroll bookkeeping
 let lastLaunchKey = null;  // avoid reloading the iframe on re-renders
+let hadInteraction = false; // deep links load with no gesture: no autostart
+for (const ev of ["pointerdown", "keydown"]) {
+  window.addEventListener(ev, () => { hadInteraction = true; },
+    { once: true, capture: true });
+}
 
 /* ---------------------------------------------------------------- helpers */
 function el(tag, cls, text) {
@@ -53,7 +59,18 @@ function el(tag, cls, text) {
 
 const visiblePrograms = disk =>
   disk.programs.map((prog, p) => ({ prog, p })).filter(x => !x.prog.hide);
+/* On the public site, only disks marked "prod": true are listed; on
+   localhost everything (except hidden) shows, so the full collection can be
+   tested before promoting disks. "hide": true always wins. Programs are not
+   affected — a prod disk shows all its visible programs. */
+const isDev = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
 const visibleDisks = () =>
+  manifest.disks.map((disk, i) => ({ disk, i }))
+    .filter(x => !x.disk.hide && (isDev || x.disk.prod === true)
+                 && visiblePrograms(x.disk).length > 0);
+/* Deep links may reach any non-hidden disk, prod or not: unlisted disks are
+   shareable by URL without appearing in the public menu. */
+const linkableDisks = () =>
   manifest.disks.map((disk, i) => ({ disk, i }))
     .filter(x => !x.disk.hide && visiblePrograms(x.disk).length > 0);
 
@@ -176,7 +193,13 @@ function launch(dIndex, pIndex, prog) {
     note.hidden = true;
   }
   frame.classList.add("active");
-  frame.src = `player.html?d=${dIndex}&p=${pIndex}&v=${SITE_VERSION}`;
+  frame.src = `player.html?d=${dIndex}&p=${pIndex}&v=${SITE_VERSION}` +
+    (hadInteraction ? "" : "&nogesture=1");
+  /* Move focus off the clicked menu button and into the emulator, so Space
+     and arrows go to the game instead of scrolling the page or
+     re-triggering the still-focused button. */
+  frame.addEventListener("load",
+    () => frame.contentWindow && frame.contentWindow.focus(), { once: true });
   if (window.matchMedia("(max-width: 900px)").matches) {
     frame.scrollIntoView({ behavior: "smooth", block: "start" });
   }
@@ -186,7 +209,7 @@ function launch(dIndex, pIndex, prog) {
 function render() {
   const state = parseHash();
   if (state.disk) {
-    const found = visibleDisks().find(x => x.disk.file === state.disk);
+    const found = linkableDisks().find(x => x.disk.file === state.disk);
     if (found) {
       renderPrograms(state, found.disk, found.i);
       if (state.prog != null) {
@@ -198,6 +221,30 @@ function render() {
   }
   renderDisks(state);
 }
+
+/* While a game is loaded, game-ish keys that land on the parent page's
+   bare body are routed INTO the emulator: stop the page-scroll default,
+   refocus the iframe (so the next physical keypress lands there natively),
+   and forward this event synthetically so nothing is lost. The player
+   page's own key handling treats forwarded events like real ones. Focused
+   menu buttons and links keep their normal keyboard behavior. */
+const GAME_KEYS = ["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+                   "ControlLeft", "ControlRight", "AltRight", "F9"];
+function routeKey(e) {
+  if (!frame.classList.contains("active")) return;
+  if (e.target !== document.body) return;
+  if (!GAME_KEYS.includes(e.code)) return;
+  e.preventDefault();
+  const w = frame.contentWindow;
+  if (!w) return;
+  w.focus();
+  w.dispatchEvent(new w.KeyboardEvent(e.type, {
+    key: e.key, code: e.code, keyCode: e.keyCode, which: e.which,
+    repeat: e.repeat, bubbles: true, cancelable: true,
+  }));
+}
+window.addEventListener("keydown", routeKey);
+window.addEventListener("keyup", routeKey);
 
 window.addEventListener("hashchange", render);
 

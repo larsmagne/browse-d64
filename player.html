@@ -65,12 +65,12 @@ fetch("manifest.json?ts=" + Date.now())
     window.EJS_backgroundColor = "#40318D";
     window.EJS_color = "#7C70DA";
     window.EJS_startButtonName = "Start " + (prog.label || prog.file);
-    /* Skip the "Start Game" button. Autoplay permission is delegated from
-       the parent page (allow="autoplay" on the iframe), and the person has
-       just clicked a menu item there, so browsers should allow it. If a
-       browser still blocks it, the emulator waits until the first click
-       inside it instead of showing the button. */
-    window.EJS_startOnLoaded = true;
+    /* Skip the "Start Game" button when a click on the parent page
+       preceded this launch (autoplay permission is delegated via
+       allow="autoplay" on the iframe). Deep links load with NO gesture —
+       browsers then block autoplay and the emulator would freeze mid-boot —
+       so those get the start button instead: one honest click. */
+    window.EJS_startOnLoaded = !qs.get("nogesture");
     /* "keyboard": true in the manifest turns on EmulatorJS's "Direct
        Keyboard Input" for this program, so keystrokes go to the C64 instead
        of the virtual gamepad mapping. Leave it off for joystick games, where
@@ -86,18 +86,76 @@ fetch("manifest.json?ts=" + Date.now())
          "options": { "vice_autoloadwarp": "disabled" }  */
     const opts = {
       "vice_autoloadwarp": "mute",
+      /* The core "supports" a 1351 mouse, so EmulatorJS grabs the pointer
+         on click by default — pointless for keyboard/joystick software.
+         Off unless a program's "options" turns it back on. */
+      "lockMouse": "disabled",
     };
-    /* Keyboard is enabled automatically for machine-language files loading
-       ABOVE $0801: they have no BASIC stub, so the user lands at READY
-       needing to type a SYS. At $0801 it's a self-starting BASIC program;
-       BELOW $0801 the load overwrites system vectors (or the stack) and
-       autostarts by itself — either way nothing to type, and likely a
-       joystick game, so those keep the gamepad mapping. An explicit
-       "keyboard": true/false in the manifest always wins. */
-    const wantsKeyboard = (typeof prog.keyboard === "boolean")
-      ? prog.keyboard
-      : (typeof prog.load === "number" && prog.load > 0x0801);
+    /* Input modes:
+       "hybrid"   (default) — the whole keyboard reaches the C64 (Space, F1,
+                  "press 1 to start"...), EXCEPT the arrow keys and Right
+                  Ctrl, which this page intercepts and feeds to the joystick.
+       "keyboard" — pure keyboard, arrows are the C64 cursor keys. Default
+                  for ML files loading above $0801 (SYS-at-READY territory,
+                  where cursor keys matter more than a joystick).
+       "joystick" — the old EmulatorJS gamepad mapping (arrows + X/Z fire,
+                  keyboard otherwise captured). Mostly useful if a game
+                  clashes with the hybrid interception.
+       Manifest: "input": "hybrid"|"keyboard"|"joystick" per program; the
+       older "keyboard": true/false still works (true=keyboard,
+       false=joystick). Real gamepads work in every mode. */
+    const mode = prog.input || (
+      (typeof prog.keyboard === "boolean")
+        ? (prog.keyboard ? "keyboard" : "joystick")
+        : ((typeof prog.load === "number" && prog.load > 0x0801)
+            ? "keyboard" : "hybrid"));
+    const wantsKeyboard = mode !== "joystick";
     if (wantsKeyboard) opts["keyboardInput"] = "enabled";
+
+    if (mode === "hybrid") {
+      /* Feed arrows + Right Ctrl to the virtual gamepad (which the VICE
+         core maps to the C64 joystick), and stop them reaching the
+         emulated keyboard. Registered in the capture phase before
+         EmulatorJS loads, so these keys never leak through as C64 cursor
+         keys. Retropad ids: 4=up 5=down 6=left 7=right 0=fire. */
+      const JOYMAP = { ArrowUp: 4, ArrowDown: 5, ArrowLeft: 6,
+                       ArrowRight: 7, ControlRight: 0, ControlLeft: 0,
+                       AltRight: 0 };
+      const joyKey = down => e => {
+        /* F9 toggles which C64 joystick port the virtual pad drives —
+           most games read port 2 (the default), some read port 1. */
+        if (e.code === "F9") {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          if (!down || e.repeat) return;
+          try {
+            const cur = window.EJS_emulator.getSettingValue("vice_joyport");
+            const next = cur === "1" ? "2" : "1";
+            window.EJS_emulator.changeSettingOption("vice_joyport", next);
+            window.EJS_emulator.displayMessage("JOYSTICK PORT " + next);
+          } catch (err) {}
+          return;
+        }
+        const id = JOYMAP[e.code];
+        if (id === undefined) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (e.repeat) return;
+        try { window.EJS_emulator.gameManager.simulateInput(0, id, down ? 1 : 0); }
+        catch (err) { /* not started yet */ }
+        if (location.search.includes("debug")) {
+          console.log("hybrid joy:", e.code, "->", id, down ? "down" : "up");
+        }
+      };
+      window.addEventListener("keydown", joyKey(true), true);
+      window.addEventListener("keyup", joyKey(false), true);
+      window.addEventListener("blur", () => {
+        try {
+          for (const id of Object.values(JOYMAP))
+            window.EJS_emulator.gameManager.simulateInput(0, id, 0);
+        } catch (err) {}
+      });
+    }
     Object.assign(opts, prog.options || {});
     window.EJS_defaultOptions = opts;
 
@@ -112,6 +170,8 @@ fetch("manifest.json?ts=" + Date.now())
         try {
           window.EJS_emulator.changeSettingOption(
             "keyboardInput", wantsKeyboard ? "enabled" : "disabled");
+          window.EJS_emulator.changeSettingOption(
+            "lockMouse", (prog.options || {}).lockMouse || "disabled");
         } catch (e) { /* older EmulatorJS without this API: defaults only */ }
       }, 50);
     };
