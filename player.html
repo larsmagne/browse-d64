@@ -12,6 +12,23 @@
   html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; background: #000; }
   .emu-holder { position: fixed; inset: 0; }
   #emu { width: 100%; height: 100%; }
+  /* The top-right hamburger toggles the bottom menu bar — needed on touch
+     screens (no hover), pointless on desktop where the bar shows on hover.
+     Hide it for mouse users; a stale saved setting can otherwise keep it
+     visible. */
+  @media (pointer: fine) {
+    .ejs_virtualGamepad_open { display: none !important; }
+    /* Don't pop the control bar up on hover over the emulator: keep it
+       transparent until the pointer is over the bar itself, at the bottom
+       edge. Its popups (settings, volume) are children of the bar, so they
+       stay visible while in use. Touch devices keep the normal behavior. */
+    .ejs_big_screen .ejs_menu_bar:not(.ejs_menu_bar_hidden) {
+      opacity: 0; transition: opacity .15s;
+    }
+    .ejs_big_screen .ejs_menu_bar:not(.ejs_menu_bar_hidden):hover {
+      opacity: 1;
+    }
+  }
   .error {
     position: fixed; top: 8px; left: 8px; right: 8px; z-index: 10;
     font-family: ui-monospace, Menlo, Consolas, monospace;
@@ -91,6 +108,12 @@ fetch("manifest.json?ts=" + Date.now())
          Off unless a program's "options" turns it back on. */
       "lockMouse": "disabled",
     };
+    /* The top-right hamburger toggles the bottom menu bar; with a mouse the
+       bar already appears on hover, so the floating button is clutter (and
+       looks broken, since the bar re-hides on mouse-out). Touch devices
+       keep it — there it's the only way to open the menu. */
+    const finePointer = window.matchMedia("(pointer: fine)").matches;
+    if (finePointer) opts["menu-bar-button"] = "hidden";
     /* Input modes:
        "hybrid"   (default) — the whole keyboard reaches the C64 (Space, F1,
                   "press 1 to start"...), EXCEPT the arrow keys and Right
@@ -158,6 +181,10 @@ fetch("manifest.json?ts=" + Date.now())
     }
     Object.assign(opts, prog.options || {});
     window.EJS_defaultOptions = opts;
+    /* Hide the top-right context-menu toggle; the same menu remains
+       available by right-clicking the emulator. Unlisted buttons keep
+       their defaults. */
+    window.EJS_Buttons = { contextMenu: false };
 
     /* EmulatorJS saves per-game settings in localStorage and re-applies
        them during game start, AFTER our defaults — so a value saved in an
@@ -172,6 +199,8 @@ fetch("manifest.json?ts=" + Date.now())
             "keyboardInput", wantsKeyboard ? "enabled" : "disabled");
           window.EJS_emulator.changeSettingOption(
             "lockMouse", (prog.options || {}).lockMouse || "disabled");
+          if (finePointer) window.EJS_emulator.changeSettingOption(
+            "menu-bar-button", "hidden");
         } catch (e) { /* older EmulatorJS without this API: defaults only */ }
       }, 50);
     };
