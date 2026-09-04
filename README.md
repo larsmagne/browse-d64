@@ -59,6 +59,10 @@ Per-program options:
   `"hide": true` beats `"prod": true`. Unlisted disks remain reachable by
   direct link (`#disk=...`), so you can share a URL to something without
   putting it in the public menu; only `"hide"` makes a disk unreachable.
+  A program link (`#disk=...&prog=...`) to an unlisted disk lists only that
+  program on the public host — though note a disk link without the prog
+  part still lists the whole disk, so the containing image is discoverable
+  by editing the URL.
   Note this is menu visibility, not access control: launch bundles for
   unlisted disks still exist on the server if you upload them.
 - **`"hide": true`** — keeps the entry in the manifest but off the site: no

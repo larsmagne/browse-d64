@@ -34,7 +34,7 @@ game ignores the stick. F12 toggles the emulator status bar.</footer>
 <script>
 "use strict";
 
-const SITE_VERSION = 29;   // bump when player.html changes, defeats stale caches
+const SITE_VERSION = 30;   // bump when player.html changes, defeats stale caches
 const CATEGORIES = ["games", "demos", "utilities", "own", "misc"];
 
 const menuEl = document.getElementById("menu");
@@ -151,8 +151,15 @@ function renderPrograms(state, disk, dIndex) {
   renderDisks.lastDisk = disk.file;       // marked bright on return
   menuEl.textContent = "";
   menuEl.append(el("div", null, `0 "${disk.name}"`));
+  /* A program deep-linked from an unlisted (non-prod) disk on the public
+     host shows only itself: the link shares that one program, not the
+     rest of the disk. Localhost always shows everything. */
+  let programs = visiblePrograms(disk);
+  if (!isDev && disk.prod !== true && state.prog != null) {
+    programs = programs.filter(x => x.prog.file === state.prog);
+  }
   const ul = el("ul", "listing");
-  visiblePrograms(disk).forEach(({ prog, p }) => {
+  programs.forEach(({ prog, p }) => {
     const b = el("button");
     if (prog.file === state.prog) b.classList.add("current");
     b.append(el("span", "blocks", String(prog.blocks ?? "").padStart(3) + " "));
